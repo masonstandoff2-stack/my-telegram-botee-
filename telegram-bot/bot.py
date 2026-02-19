@@ -1,76 +1,186 @@
 import logging
+import asyncio
+import time
+from functools import wraps
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.error import TimedOut, NetworkError, RetryAfter
 
-# Настройка логирования
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# ===== НАСТРОЙКА ЛОГИРОВАНИЯ =====
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ===== ТВОИ ДАННЫЕ =====
 TOKEN = "8356262671:AAEKOnJH3xI8s0FTccF0DbJjYKiCuzOnc7g"
 FILE_ID = "BQACAgEAAxkBAAIgTWmXfWAZu8sh3HQC5vQjnrVp-TK-AAIMCQAC4QfARIqc8d_wUUsFOgQ"
+ADMIN_ID = 8426101180  # Замени на свой Telegram ID для получения уведомлений
 
 # Первый канал
-CHANNEL1_ID = "-1003318734165"  # ID первого канала
-CHANNEL1_LINK = "https://t.me/br_mason"  # Ссылка на первый канал
-CHANNEL1_NAME = "BR MASON"  # Название первого канала
+CHANNEL1_ID = "-1003318734165"
+CHANNEL1_LINK = "https://t.me/br_mason"
+CHANNEL1_NAME = "BR MASON"
 
 # Второй канал
-CHANNEL2_ID = "-1002371853221"  # ID второго канала
-CHANNEL2_LINK = "https://t.me/HolidollaModz"  # Ссылка на второй канал
-CHANNEL2_NAME = "HolidollaModz"  # Название второго канала
+CHANNEL2_ID = "-1002371853221"
+CHANNEL2_LINK = "https://t.me/HolidollaModz"
+CHANNEL2_NAME = "HolidollaModz"
 
+# ===== НАСТРОЙКИ ОПТИМИЗАЦИИ =====
+TIMEOUT = 25  # Таймаут для операций (Bothost убивает после 30 секунд)
+CACHE_TTL = 60  # Время жизни кэша подписок в секундах
+MAX_RETRIES = 3  # Количество попыток при ошибках
 
-# =======================
+# Кэш для результатов проверки подписки
+subscription_cache = {}
+cache_timestamps = {}
 
+# ===== ДЕКОРАТОР ДЛЯ ОБРАБОТКИ ТАЙМАУТОВ =====
+def handle_timeout(func):
+    """Декоратор для защиты от таймаутов"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await asyncio.wait_for(func(*args, **kwargs), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error(f"⏰ Таймаут в функции {func.__name__}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Ошибка в {func.__name__}: {e}")
+            return None
+    return wrapper
+
+# ===== ОПТИМИЗИРОВАННАЯ ПРОВЕРКА ПОДПИСКИ =====
 async def check_subscription(user_id, context):
-    """Проверяет, подписан ли пользователь на оба канала"""
+    """Проверяет подписку на оба канала (с параллельными запросами)"""
     try:
-        # Проверка первого канала
-        member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
-        sub1 = member1.status in ['member', 'administrator', 'creator']
-
-        # Проверка второго канала
-        member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
-        sub2 = member2.status in ['member', 'administrator', 'creator']
-
-        # Пользователь должен быть подписан на оба канала
+        # Запускаем обе проверки параллельно
+        task1 = context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
+        task2 = context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
+        
+        results = await asyncio.gather(task1, task2, return_exceptions=True)
+        
+        sub1 = False
+        sub2 = False
+        
+        # Проверяем первый канал
+        if not isinstance(results[0], Exception):
+            sub1 = results[0].status in ['member', 'administrator', 'creator']
+        else:
+            logger.warning(f"Ошибка проверки канала 1 для {user_id}: {results[0]}")
+        
+        # Проверяем второй канал
+        if not isinstance(results[1], Exception):
+            sub2 = results[1].status in ['member', 'administrator', 'creator']
+        else:
+            logger.warning(f"Ошибка проверки канала 2 для {user_id}: {results[1]}")
+        
         return sub1 and sub2
     except Exception as e:
-        logging.error(f"Ошибка проверки подписки: {e}")
+        logger.error(f"Критическая ошибка проверки подписки: {e}")
         return False
 
+async def check_subscription_cached(user_id, context):
+    """Проверка подписки с кэшированием"""
+    current_time = time.time()
+    
+    # Очистка устаревшего кэша (раз в 100 запросов)
+    if len(subscription_cache) > 1000:
+        cleanup_time = current_time - (CACHE_TTL * 2)
+        expired = [uid for uid, ts in cache_timestamps.items() if ts < cleanup_time]
+        for uid in expired:
+            subscription_cache.pop(uid, None)
+            cache_timestamps.pop(uid, None)
+    
+    # Проверяем кэш
+    if user_id in subscription_cache:
+        cached_time = cache_timestamps.get(user_id, 0)
+        if current_time - cached_time < CACHE_TTL:
+            return subscription_cache[user_id]
+    
+    # Делаем реальную проверку
+    result = await check_subscription(user_id, context)
+    
+    # Сохраняем в кэш
+    subscription_cache[user_id] = result
+    cache_timestamps[user_id] = current_time
+    
+    return result
 
 async def get_unsubscribed_channels(user_id, context):
     """Возвращает список каналов, на которые не подписан пользователь"""
     unsubscribed = []
-
+    
+    # Проверяем первый канал
     try:
-        # Проверка первого канала
         member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
         if member1.status not in ['member', 'administrator', 'creator']:
             unsubscribed.append((CHANNEL1_NAME, CHANNEL1_LINK))
-    except:
+    except Exception as e:
+        logger.warning(f"Ошибка при проверке канала 1 для {user_id}: {e}")
         unsubscribed.append((CHANNEL1_NAME, CHANNEL1_LINK))
-
+    
+    # Проверяем второй канал
     try:
-        # Проверка второго канала
         member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
         if member2.status not in ['member', 'administrator', 'creator']:
             unsubscribed.append((CHANNEL2_NAME, CHANNEL2_LINK))
-    except:
+    except Exception as e:
+        logger.warning(f"Ошибка при проверке канала 2 для {user_id}: {e}")
         unsubscribed.append((CHANNEL2_NAME, CHANNEL2_LINK))
-
+    
     return unsubscribed
 
+# ===== БЕЗОПАСНАЯ ОТПРАВКА ФАЙЛА =====
+async def safe_send_document(context, chat_id, document, max_retries=MAX_RETRIES):
+    """Отправка документа с повторными попытками"""
+    for attempt in range(max_retries):
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="upload_document")
+            await asyncio.sleep(0.5)  # Небольшая задержка перед отправкой
+            
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=document
+            )
+            logger.info(f"✅ Файл отправлен пользователю {chat_id}")
+            return True
+            
+        except RetryAfter as e:
+            wait_time = e.retry_after
+            logger.warning(f"⚠️ Telegram просит подождать {wait_time}с")
+            await asyncio.sleep(min(wait_time, 5))  # Ждем не больше 5 секунд
+            
+        except (TimedOut, NetworkError) as e:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2
+                logger.warning(f"⚠️ Сетевая ошибка, попытка {attempt + 2} через {wait_time}с")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"❌ Не удалось отправить файл после {max_retries} попыток")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка при отправке: {e}")
+            return False
+    
+    return False
 
+# ===== ОБРАБОТЧИКИ КОМАНД =====
+@handle_timeout
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Старт - проверяем подписку и показываем кнопку"""
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
-    is_subscribed = await check_subscription(user_id, context)
+    
+    # Отправляем "печатает..." чтобы пользователь не думал, что бот завис
+    await context.bot.send_chat_action(chat_id=user_id, action="typing")
+    
+    is_subscribed = await check_subscription_cached(user_id, context)
 
     if is_subscribed:
-        # Кнопка для получения файла
         keyboard = [[
             InlineKeyboardButton("📥 Получить файл", callback_data="get_file")
         ]]
@@ -87,20 +197,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
     else:
-        # Получаем список каналов для подписки
         unsubscribed = await get_unsubscribed_channels(user_id, context)
 
-        # Создаем кнопки для каждого канала
         keyboard = []
         for name, link in unsubscribed:
             keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {name}", url=link)])
 
-        # Добавляем кнопку проверки
         keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription")])
-
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Формируем список каналов для подписки
         channels_list = "\n".join([f"• {name}: {link}" for name, link in unsubscribed])
 
         welcome_text = (
@@ -117,7 +222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
 
-
+@handle_timeout
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатий на кнопки"""
     query = update.callback_query
@@ -127,22 +232,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = query.from_user.first_name
 
     if query.data == "get_file":
-        is_subscribed = await check_subscription(user_id, context)
+        # Показываем, что бот работает
+        await context.bot.send_chat_action(chat_id=user_id, action="typing")
+        
+        is_subscribed = await check_subscription_cached(user_id, context)
 
         if not is_subscribed:
-            # Получаем список каналов для подписки
             unsubscribed = await get_unsubscribed_channels(user_id, context)
 
-            # Создаем кнопки для каждого канала
             keyboard = []
             for name, link in unsubscribed:
                 keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {name}", url=link)])
 
             keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription")])
-
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Формируем список каналов для подписки
             channels_list = "\n".join([f"• {name}: {link}" for name, link in unsubscribed])
 
             await query.edit_message_text(
@@ -154,35 +258,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Отправляем "печатает..." для лучшего UX
-        await context.bot.send_chat_action(chat_id=user_id, action="upload_document")
+        # Отправляем файл
+        success = await safe_send_document(context, user_id, FILE_ID)
 
-        try:
-            await context.bot.send_document(
-                chat_id=user_id,
-                document=FILE_ID
-            )
-            logging.info(f"✅ Файл отправлен пользователю {user_id}")
-
-            # Показываем сообщение об успехе
+        if success:
             await query.edit_message_text(
                 f"✅ <b>Файл отправлен!</b>\n\n"
                 f"Проверь сообщения внизу",
                 parse_mode='HTML'
             )
-        except Exception as e:
-            logging.error(f"❌ Ошибка отправки: {e}")
+        else:
             await query.edit_message_text(
                 "❌ <b>Ошибка</b>\nНе удалось отправить файл. Попробуй позже.",
                 parse_mode='HTML'
             )
 
     elif query.data == "check_subscription":
-        # Проверяем подписку после нажатия кнопки
-        is_subscribed = await check_subscription(user_id, context)
+        # Показываем, что бот работает
+        await context.bot.send_chat_action(chat_id=user_id, action="typing")
+        
+        is_subscribed = await check_subscription_cached(user_id, context)
 
         if is_subscribed:
-            # Если подписан - показываем кнопку получения файла
             keyboard = [[
                 InlineKeyboardButton("📥 Получить файл", callback_data="get_file")
             ]]
@@ -196,7 +293,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
         else:
-            # Если не подписан - показываем какие каналы остались
             unsubscribed = await get_unsubscribed_channels(user_id, context)
 
             keyboard = []
@@ -204,7 +300,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {name}", url=link)])
 
             keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription")])
-
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             channels_list = "\n".join([f"• {name}: {link}" for name, link in unsubscribed])
@@ -218,27 +313,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
 
-
+@handle_timeout
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправка файла только подписанным"""
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
-    is_subscribed = await check_subscription(user_id, context)
+    
+    # Отправляем "печатает..."
+    await context.bot.send_chat_action(chat_id=user_id, action="typing")
+    
+    is_subscribed = await check_subscription_cached(user_id, context)
 
     if not is_subscribed:
-        # Получаем список каналов для подписки
         unsubscribed = await get_unsubscribed_channels(user_id, context)
 
-        # Создаем кнопки для каждого канала
         keyboard = []
         for name, link in unsubscribed:
             keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {name}", url=link)])
 
         keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription")])
-
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Формируем список каналов для подписки
         channels_list = "\n".join([f"• {name}: {link}" for name, link in unsubscribed])
 
         await update.message.reply_text(
@@ -250,27 +345,13 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Отправляем "печатает..." для лучшего UX
-    await context.bot.send_chat_action(chat_id=update.effective_user.id, action="upload_document")
+    # Отправляем файл
+    await safe_send_document(context, user_id, FILE_ID)
 
-    try:
-        await context.bot.send_document(
-            chat_id=update.effective_user.id,
-            document=FILE_ID
-        )
-        logging.info(f"✅ Файл отправлен пользователю {user_id}")
-    except Exception as e:
-        logging.error(f"❌ Ошибка отправки: {e}")
-        await update.message.reply_text(
-            "❌ <b>Ошибка</b>\nНе удалось отправить файл. Попробуй позже.",
-            parse_mode='HTML'
-        )
-
-
+@handle_timeout
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Любое сообщение = попытка получить файл"""
     await get_file(update, context)
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда помощи"""
@@ -285,17 +366,52 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
+# ===== ОБРАБОТЧИК ОШИБОК =====
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик ошибок"""
+    logger.error(f"❌ Произошла ошибка: {context.error}")
+    
+    # Уведомляем админа о критических ошибках
+    if ADMIN_ID:
+        try:
+            error_msg = f"❌ Ошибка бота: {context.error}"
+            await context.bot.send_message(chat_id=ADMIN_ID, text=error_msg[:200])
+        except:
+            pass
 
+# ===== МОНИТОРИНГ ПАМЯТИ =====
+async def log_memory_usage():
+    """Логирует использование памяти (опционально)"""
+    try:
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        memory_usage = process.memory_info().rss / 1024 / 1024
+        logger.info(f"💾 Использование памяти: {memory_usage:.2f} MB")
+    except ImportError:
+        pass  # psutil не установлен - пропускаем
+
+# ===== ЗАПУСК БОТА =====
 def main():
-    """Запуск"""
+    """Запуск бота с оптимизациями для Bothost"""
     print("╔════════════════════════════════╗")
     print("║     🚀 БОТ ЗАПУСКАЕТСЯ...      ║")
     print("╠════════════════════════════════╣")
     print(f"║ 📢 Канал 1: {CHANNEL1_NAME[:15]}...  ║")
     print(f"║ 📢 Канал 2: {CHANNEL2_NAME[:15]}...  ║")
+    print("╠════════════════════════════════╣")
+    print("║ ⚡ Режим: Оптимизированный      ║")
+    print("║ 🔒 Таймаут: 25 сек              ║")
+    print("║ 💾 Кэш: 60 сек                  ║")
     print("╚════════════════════════════════╝")
 
-    app = Application.builder().token(TOKEN).build()
+    # Создаем приложение с настройками для Bothost
+    app = Application.builder()\
+        .token(TOKEN)\
+        .connect_timeout(20)\
+        .read_timeout(20)\
+        .write_timeout(20)\
+        .build()
 
     # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
@@ -303,10 +419,23 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Добавляем глобальный обработчик ошибок
+    app.add_error_handler(error_handler)
 
     print("\n✅ Бот готов к работе!")
-    app.run_polling()
+    print("📡 Запуск polling...\n")
 
+    try:
+        app.run_polling(
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True,  # Пропускаем старые обновления
+            close_loop=True  # Закрываем цикл при выходе
+        )
+    except KeyboardInterrupt:
+        print("\n\n👋 Бот остановлен")
+    except Exception as e:
+        print(f"\n❌ Критическая ошибка: {e}")
 
 if __name__ == '__main__':
     main()
