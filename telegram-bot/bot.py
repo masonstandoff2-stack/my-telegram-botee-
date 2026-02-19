@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== ТВОИ ДАННЫЕ =====
-TOKEN = "8356262671:AAEKOnJH3xI8s0FTccF0DbJjYKiCuzOnc7g"
+TOKEN = "8356262671:AAFpw2GxPp7_DAnFDPX45cn6lr3f3AXUffY"
 FILE_ID = "BQACAgEAAxkBAAIgTWmXfWAZu8sh3HQC5vQjnrVp-TK-AAIMCQAC4QfARIqc8d_wUUsFOgQ"
 ADMIN_ID = 8426101180  # Замени на свой Telegram ID для получения уведомлений
 
@@ -439,3 +439,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
