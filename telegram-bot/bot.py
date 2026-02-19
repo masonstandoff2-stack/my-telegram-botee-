@@ -109,6 +109,7 @@ async def check_subscription_cached(user_id, context):
     
     return result
 
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ =====
 async def get_unsubscribed_channels(user_id, context):
     """Возвращает список каналов, на которые не подписан пользователь"""
     unsubscribed = []
@@ -118,19 +119,26 @@ async def get_unsubscribed_channels(user_id, context):
         member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
         if member1.status not in ['member', 'administrator', 'creator']:
             unsubscribed.append((CHANNEL1_NAME, CHANNEL1_LINK))
+            logger.info(f"Пользователь {user_id} НЕ подписан на {CHANNEL1_NAME}")
     except Exception as e:
         logger.warning(f"Ошибка при проверке канала 1 для {user_id}: {e}")
+        # В случае ошибки считаем, что пользователь не подписан
         unsubscribed.append((CHANNEL1_NAME, CHANNEL1_LINK))
+        logger.info(f"Добавляем {CHANNEL1_NAME} в список неподписанных из-за ошибки")
     
     # Проверяем второй канал
     try:
         member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
         if member2.status not in ['member', 'administrator', 'creator']:
             unsubscribed.append((CHANNEL2_NAME, CHANNEL2_LINK))
+            logger.info(f"Пользователь {user_id} НЕ подписан на {CHANNEL2_NAME}")
     except Exception as e:
         logger.warning(f"Ошибка при проверке канала 2 для {user_id}: {e}")
+        # В случае ошибки считаем, что пользователь не подписан
         unsubscribed.append((CHANNEL2_NAME, CHANNEL2_LINK))
+        logger.info(f"Добавляем {CHANNEL2_NAME} в список неподписанных из-за ошибки")
     
+    logger.info(f"Для пользователя {user_id} найдено {len(unsubscribed)} неподписанных каналов")
     return unsubscribed
 
 # ===== БЕЗОПАСНАЯ ОТПРАВКА ФАЙЛА =====
@@ -366,6 +374,68 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
+# ===== ДИАГНОСТИЧЕСКАЯ КОМАНДА =====
+async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика проблем с подпиской"""
+    user_id = update.effective_user.id
+    
+    try:
+        # Проверяем первый канал
+        try:
+            member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
+            status1 = f"Статус: {member1.status}"
+            is_sub1 = member1.status in ['member', 'administrator', 'creator']
+        except Exception as e:
+            status1 = f"Ошибка: {type(e).__name__} - {e}"
+            is_sub1 = False
+        
+        # Проверяем второй канал
+        try:
+            member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
+            status2 = f"Статус: {member2.status}"
+            is_sub2 = member2.status in ['member', 'administrator', 'creator']
+        except Exception as e:
+            status2 = f"Ошибка: {type(e).__name__} - {e}"
+            is_sub2 = False
+        
+        # Проверяем права бота
+        try:
+            bot_member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=context.bot.id)
+            bot_status1 = f"Статус бота: {bot_member1.status}"
+        except Exception as e:
+            bot_status1 = f"Бот не админ или ошибка: {e}"
+        
+        try:
+            bot_member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=context.bot.id)
+            bot_status2 = f"Статус бота: {bot_member2.status}"
+        except Exception as e:
+            bot_status2 = f"Бот не админ или ошибка: {e}"
+        
+        diag_text = f"""
+🔍 <b>ДИАГНОСТИКА</b>
+
+👤 <b>Пользователь:</b> {user_id}
+
+📢 <b>Канал 1: {CHANNEL1_NAME}</b>
+ID: {CHANNEL1_ID}
+{bot_status1}
+Ваш статус: {status1}
+Подписан: {'✅' if is_sub1 else '❌'}
+
+📢 <b>Канал 2: {CHANNEL2_NAME}</b>
+ID: {CHANNEL2_ID}
+{bot_status2}
+Ваш статус: {status2}
+Подписан: {'✅' if is_sub2 else '❌'}
+
+<b>Общий доступ:</b> {'✅ Разрешен' if (is_sub1 and is_sub2) else '❌ Запрещен'}
+"""
+        
+        await update.message.reply_text(diag_text, parse_mode='HTML')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка диагностики: {e}")
+
 # ===== ОБРАБОТЧИК ОШИБОК =====
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
@@ -378,18 +448,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=ADMIN_ID, text=error_msg[:200])
         except:
             pass
-
-# ===== МОНИТОРИНГ ПАМЯТИ =====
-async def log_memory_usage():
-    """Логирует использование памяти (опционально)"""
-    try:
-        import psutil
-        import os
-        process = psutil.Process(os.getpid())
-        memory_usage = process.memory_info().rss / 1024 / 1024
-        logger.info(f"💾 Использование памяти: {memory_usage:.2f} MB")
-    except ImportError:
-        pass  # psutil не установлен - пропускаем
 
 # ===== ЗАПУСК БОТА =====
 def main():
@@ -417,6 +475,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("get", get_file))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("diag", diagnose))  # Новая диагностическая команда
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     
@@ -439,4 +498,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
