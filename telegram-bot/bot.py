@@ -10,41 +10,27 @@ logger = logging.getLogger(__name__)
 TOKEN = "8356262671:AAFpw2GxPp7_DAnFDPX45cn6lr3f3AXUffY"
 FILE_ID = "BQACAgEAAxkBAAIqQGm5tGaw1zCgdkOp_B7C0SgbvRfIAAImBgACd13RRaOGA26Mci6pOgQ"
 
-# Каналы
-CHANNEL1_ID = "-1003318734165"
-CHANNEL1_LINK = "https://t.me/br_mason"
-CHANNEL1_NAME = "BR MASON"
-
-CHANNEL2_ID = "-1002371853221"
-CHANNEL2_LINK = "https://t.me/HolidollaModz"
-CHANNEL2_NAME = "HolidollaModz"
+# Только один канал
+CHANNEL_ID = "-1002371853221"
+CHANNEL_LINK = "https://t.me/HolidollaModz"
+CHANNEL_NAME = "HolidollaModz"
 
 # ===== ПРОСТАЯ ПРОВЕРКА ПОДПИСКИ =====
 async def check_user_subscription(user_id, context):
-    """Проверяет подписку пользователя на каналы"""
+    """Проверяет подписку пользователя на канал"""
     try:
-        # Проверяем 1 канал
+        # Проверяем канал
         try:
-            member1 = await context.bot.get_chat_member(chat_id=CHANNEL1_ID, user_id=user_id)
-            sub1 = member1.status in ['member', 'administrator', 'creator']
-            logger.info(f"Канал 1: статус {member1.status} для {user_id}")
+            member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            is_subscribed = member.status in ['member', 'administrator', 'creator']
+            logger.info(f"Канал: статус {member.status} для {user_id}")
+            return is_subscribed
         except Exception as e:
-            logger.error(f"Ошибка канала 1: {e}")
-            sub1 = False
-        
-        # Проверяем 2 канал
-        try:
-            member2 = await context.bot.get_chat_member(chat_id=CHANNEL2_ID, user_id=user_id)
-            sub2 = member2.status in ['member', 'administrator', 'creator']
-            logger.info(f"Канал 2: статус {member2.status} для {user_id}")
-        except Exception as e:
-            logger.error(f"Ошибка канала 2: {e}")
-            sub2 = False
-        
-        return sub1, sub2
+            logger.error(f"Ошибка проверки канала: {e}")
+            return False
     except Exception as e:
         logger.error(f"Общая ошибка: {e}")
-        return False, False
+        return False
 
 # ===== СТАРТ =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,27 +38,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = update.effective_user.first_name
     
     # Проверяем подписку
-    sub1, sub2 = await check_user_subscription(user_id, context)
+    is_subscribed = await check_user_subscription(user_id, context)
     
-    if sub1 and sub2:
-        # Подписан на всё
+    if is_subscribed:
+        # Подписан на канал
         keyboard = [[InlineKeyboardButton("📥 Получить файл", callback_data="get_file")]]
         await update.message.reply_text(
-            f"✅ Привет, {first_name}!\nТы подписан на все каналы.\nНажми кнопку для получения файла.",
+            f"✅ Привет, {first_name}!\nТы подписан на канал.\nНажми кнопку для получения файла.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
         # Не подписан
-        keyboard = []
-        if not sub1:
-            keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {CHANNEL1_NAME}", url=CHANNEL1_LINK)])
-        if not sub2:
-            keyboard.append([InlineKeyboardButton(f"📢 Подписаться на {CHANNEL2_NAME}", url=CHANNEL2_LINK)])
-        
-        keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data="check_subs")])
+        keyboard = [
+            [InlineKeyboardButton(f"📢 Подписаться на {CHANNEL_NAME}", url=CHANNEL_LINK)],
+            [InlineKeyboardButton("✅ Я подписался", callback_data="check_subs")]
+        ]
         
         await update.message.reply_text(
-            f"❌ Привет, {first_name}!\nПодпишись на каналы и нажми кнопку:",
+            f"❌ Привет, {first_name}!\nПодпишись на канал и нажми кнопку:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -86,27 +69,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "check_subs":
         # Проверяем подписку
-        sub1, sub2 = await check_user_subscription(user_id, context)
+        is_subscribed = await check_user_subscription(user_id, context)
         
-        if sub1 and sub2:
+        if is_subscribed:
             # Всё хорошо
             keyboard = [[InlineKeyboardButton("📥 Получить файл", callback_data="get_file")]]
             await query.edit_message_text(
-                f"✅ Отлично, {first_name}! Теперь ты подписан на все каналы.",
+                f"✅ Отлично, {first_name}! Теперь ты подписан на канал.",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
             # Всё ещё не подписан
-            keyboard = []
-            if not sub1:
-                keyboard.append([InlineKeyboardButton(f"📢 {CHANNEL1_NAME}", url=CHANNEL1_LINK)])
-            if not sub2:
-                keyboard.append([InlineKeyboardButton(f"📢 {CHANNEL2_NAME}", url=CHANNEL2_LINK)])
-            
-            keyboard.append([InlineKeyboardButton("🔄 Проверить снова", callback_data="check_subs")])
+            keyboard = [
+                [InlineKeyboardButton(f"📢 {CHANNEL_NAME}", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("🔄 Проверить снова", callback_data="check_subs")]
+            ]
             
             await query.edit_message_text(
-                f"❌ {first_name}, ты всё ещё не подписан на некоторые каналы!",
+                f"❌ {first_name}, ты всё ещё не подписан на канал!",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
     
@@ -126,47 +106,25 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = f"🔍 Диагностика для {user_id}:\n\n"
     
-    # Проверяем канал 1
+    # Проверяем канал
     try:
-        chat1 = await context.bot.get_chat(CHANNEL1_ID)
-        text += f"✅ Канал 1 найден: {chat1.title}\n"
+        chat = await context.bot.get_chat(CHANNEL_ID)
+        text += f"✅ Канал найден: {chat.title}\n"
         
         try:
-            bot_in_channel = await context.bot.get_chat_member(CHANNEL1_ID, context.bot.id)
+            bot_in_channel = await context.bot.get_chat_member(CHANNEL_ID, context.bot.id)
             text += f"   Бот в канале: {bot_in_channel.status}\n"
         except Exception as e:
-            text += f"❌ Бот не в канале 1: {e}\n"
+            text += f"❌ Бот не в канале: {e}\n"
             
         try:
-            user_in_channel = await context.bot.get_chat_member(CHANNEL1_ID, user_id)
+            user_in_channel = await context.bot.get_chat_member(CHANNEL_ID, user_id)
             text += f"   Вы в канале: {user_in_channel.status}\n"
         except Exception as e:
             text += f"❌ Ошибка проверки вас: {e}\n"
             
     except Exception as e:
-        text += f"❌ Канал 1 недоступен: {e}\n"
-    
-    text += "\n"
-    
-    # Проверяем канал 2
-    try:
-        chat2 = await context.bot.get_chat(CHANNEL2_ID)
-        text += f"✅ Канал 2 найден: {chat2.title}\n"
-        
-        try:
-            bot_in_channel = await context.bot.get_chat_member(CHANNEL2_ID, context.bot.id)
-            text += f"   Бот в канале: {bot_in_channel.status}\n"
-        except Exception as e:
-            text += f"❌ Бот не в канале 2: {e}\n"
-            
-        try:
-            user_in_channel = await context.bot.get_chat_member(CHANNEL2_ID, user_id)
-            text += f"   Вы в канале: {user_in_channel.status}\n"
-        except Exception as e:
-            text += f"❌ Ошибка проверки вас: {e}\n"
-            
-    except Exception as e:
-        text += f"❌ Канал 2 недоступен: {e}\n"
+        text += f"❌ Канал недоступен: {e}\n"
     
     await update.message.reply_text(text)
 
@@ -185,8 +143,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
