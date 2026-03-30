@@ -8,7 +8,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TOKEN = "8356262671:AAFpw2GxPp7_DAnFDPX45cn6lr3f3AXUffY"
-FILE_ID = "BQACAgEAAxkBAAIxS2nBi2PKd8YX8UDFKaT36NPj-aXtAAIpBwACBxgQRkciUcQdB2PVOgQ"
+FILE_ID = "BQACAgEAAxkBAAI3kmnKmJwWIk8VmQS6NLXaVkJVU3U3AALwBQACyW9RRi3pRg6BybGDOgQ"
 
 # Только один канал
 CHANNEL_ID = "-1002371853221"
