@@ -8,12 +8,12 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TOKEN = "8356262671:AAFpw2GxPp7_DAnFDPX45cn6lr3f3AXUffY"
-FILE_ID = "BQACAgEAAxkBAAI3kmnKmJwWIk8VmQS6NLXaVkJVU3U3AALwBQACyW9RRi3pRg6BybGDOgQ"
+FILE_ID = "BQACAgEAAxkBAAI-vmnQG9aFWSWvV62QqA8XFSvQbXLAAAJYCgACGnaBRjXG9R6_u6QTOwQ"
 
 # Только один канал
-CHANNEL_ID = "-1002371853221"
-CHANNEL_LINK = "https://t.me/HolidollaModz"
-CHANNEL_NAME = "HolidollaModz"
+CHANNEL_ID = "-1003204433403"
+CHANNEL_LINK = "https://t.me/MansoryHolidolla_br"
+CHANNEL_NAME = "MansoryHolidolla"
 
 # ===== ПРОСТАЯ ПРОВЕРКА ПОДПИСКИ =====
 async def check_user_subscription(user_id, context):
