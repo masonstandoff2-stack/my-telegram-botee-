@@ -18,9 +18,9 @@ CHANNELS = [
         "name": "Mansory Holidolla"
     },
     {
-        "id": "-1002371853221",
-        "link": "https://t.me/HolidollaModz",
-        "name": "Holidolla Modz"
+        "id": "-1003939341245",
+        "link": "https://t.me/Jooop1",
+        "name": "Резерв"
     }
 ]
 
