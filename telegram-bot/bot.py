@@ -11,6 +11,9 @@ TOKEN = "8356262671:AAFpw2GxPp7_DAnFDPX45cn6lr3f3AXUffY"
 FILE_ID = "BQACAgEAAxkBAAJNeGnzuNkvB8tWf8kKXcIAAcYXE9Gd6wACbwYAAph-oUfzL5FFEmDfbDsE"
 OWNER_ID = 8733257796  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID (узнайте у @userinfobot)
 
+# Хранилище последнего пользователя, которому писал владелец
+last_user_reply = {}
+
 # ===== КАНАЛЫ ДЛЯ ПОДПИСКИ =====
 CHANNELS = [
     {
@@ -99,20 +102,12 @@ async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     
-    # Проверяем, находится ли пользователь в режиме поддержки
-    if context.user_data.get("in_support_mode", False):
-        # Пересылаем сообщение владельцу
-        await forward_to_owner(update, context)
-    else:
-        # Обычное сообщение - предлагаем поддержку
-        keyboard = [
-            [InlineKeyboardButton("💬 Связаться с поддержкой", callback_data="support")]
-        ]
-        await message.reply_text(
-            "❓ Нужна помощь?\n"
-            "Нажми кнопку 'Техподдержка' чтобы задать вопрос.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    # Если это владелец - не пересылаем, это ответы
+    if user.id == OWNER_ID:
+        return
+    
+    # Пересылаем сообщение владельцу
+    await forward_to_owner(update, context)
 
 async def forward_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Пересылает сообщение от пользователя владельцу"""
@@ -121,7 +116,7 @@ async def forward_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Формируем информацию о пользователе
     user_info = (
-        f"🆕 <b>Новое сообщение в техподдержку!</b>\n"
+        f"🆕 <b>НОВОЕ СООБЩЕНИЕ В ПОДДЕРЖКУ!</b>\n"
         f"{'─' * 30}\n"
         f"👤 <b>Пользователь:</b> {user.full_name}\n"
         f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
@@ -129,31 +124,46 @@ async def forward_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 <b>Ссылка:</b> tg://user?id={user.id}\n"
         f"{'─' * 30}\n"
         f"💬 <b>Сообщение:</b>\n"
+        f"{message.text if message.text else '[Не текстовое сообщение]'}\n"
+        f"{'─' * 30}"
     )
     
     # Отправляем владельцу информацию + пересылаем сообщение
     try:
+        # Сначала отправляем информацию
         await context.bot.send_message(
             chat_id=OWNER_ID,
             text=user_info,
             parse_mode="HTML"
         )
         
-        # Пересылаем само сообщение
-        await message.copy(chat_id=OWNER_ID)
+        # Пересылаем само сообщение (если это не текст)
+        if message.text:
+            # Для текста уже отправили выше
+            pass
+        elif message.photo:
+            await message.photo[-1].copy(chat_id=OWNER_ID, caption=f"📸 Фото от {user.full_name}")
+        elif message.voice:
+            await message.voice.copy(chat_id=OWNER_ID, caption=f"🎤 Голосовое от {user.full_name}")
+        elif message.video:
+            await message.video.copy(chat_id=OWNER_ID, caption=f"🎥 Видео от {user.full_name}")
+        elif message.document:
+            await message.document.copy(chat_id=OWNER_ID, caption=f"📄 Документ от {user.full_name}")
+        else:
+            await context.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ Неподдерживаемый тип сообщения")
         
-        # Отправляем кнопки для ответа владельцу
-        reply_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✍️ Ответить", callback_data=f"reply_{user.id}")],
-            [InlineKeyboardButton("❌ Закрыть диалог", callback_data=f"close_{user.id}")]
-        ])
-        
+        # Подсказка для ответа
         await context.bot.send_message(
             chat_id=OWNER_ID,
-            text="⬆️ <b>Что хотите сделать?</b>",
-            parse_mode="HTML",
-            reply_markup=reply_keyboard
+            text=f"✍️ <b>ЧТОБЫ ОТВЕТИТЬ:</b>\n"
+                 f"Просто напишите ответ на это сообщение!\n"
+                 f"Бот сам отправит его пользователю {user.id}",
+            parse_mode="HTML"
         )
+        
+        # Сохраняем ID пользователя в контексте для ответа
+        # Ключом будет message_id последнего сообщения от владельца
+        context.bot_data[f"reply_to_{OWNER_ID}"] = user.id
         
         # Подтверждение пользователю
         await message.reply_text(
@@ -169,39 +179,64 @@ async def forward_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при пересылке: {e}")
         await message.reply_text("❌ Ошибка при отправке сообщения. Попробуйте позже.")
 
-# ===== ОТВЕТ ПОЛЬЗОВАТЕЛЮ ОТ ВЛАДЕЛЬЦА =====
-async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Отправляет ответ пользователю"""
-    query = update.callback_query
-    await query.answer()
+# ===== ОБРАБОТКА ОТВЕТОВ ОТ ВЛАДЕЛЬЦА =====
+async def handle_owner_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает ответы владельца (ПРОСТОЙ ТЕКСТ или ОТВЕТ на сообщение)"""
+    user = update.effective_user
     
-    # Переключаем режим ожидания ответа
-    context.user_data["awaiting_reply_text"] = user_id
-    await query.edit_message_text(
-        f"✍️ Введите ответ для пользователя <code>{user_id}</code>:\n\n"
-        f"💡 <b>Совет:</b> Вы можете использовать форматирование (жирный, курсив и т.д.)",
-        parse_mode="HTML"
-    )
+    # Только владелец может отвечать
+    if user.id != OWNER_ID:
+        return
+    
+    message = update.message
+    reply_text = message.text
+    
+    if not reply_text:
+        await message.reply_text("❌ Пожалуйста, отправьте текст ответа")
+        return
+    
+    # СПОСОБ 1: Ответ на конкретное сообщение от бота
+    if message.reply_to_message:
+        # Пытаемся найти ID пользователя из пересланного сообщения
+        reply_to_msg = message.reply_to_message
+        
+        # Проверяем, есть ли в тексте ID пользователя
+        import re
+        user_id_match = re.search(r'ID:</code> <code>(\d+)</code>', reply_to_msg.text or '')
+        if user_id_match:
+            target_user_id = int(user_id_match.group(1))
+        else:
+            # Ищем в bot_data сохранённый ID
+            target_user_id = context.bot_data.get(f"reply_to_{OWNER_ID}")
+            
+        if target_user_id:
+            await send_reply_to_user(update, context, target_user_id, reply_text)
+            return
+    
+    # СПОСОБ 2: Просто текст (без ответа) - используем последнего пользователя
+    target_user_id = context.bot_data.get(f"reply_to_{OWNER_ID}")
+    if target_user_id:
+        await send_reply_to_user(update, context, target_user_id, reply_text)
+    else:
+        await message.reply_text(
+            "❌ <b>Не могу определить кому отвечать!</b>\n\n"
+            "📝 <b>Как ответить пользователю:</b>\n"
+            "1️⃣ <b>Ответьте на сообщение</b> которое пришло от бота (из поддержки)\n"
+            "2️⃣ Или сначала получите сообщение от пользователя, а потом напишите ответ\n\n"
+            "💡 <b>Пример:</b>\n"
+            "Пользователь: Здравствуйте!\n"
+            "Бот пересылает вам → вы отвечаете на это сообщение бота",
+            parse_mode="HTML"
+        )
 
-async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текст ответа от владельца"""
-    if update.effective_user.id != OWNER_ID:
-        return
-    
-    user_id = context.user_data.get("awaiting_reply_text")
-    if not user_id:
-        return
-    
-    reply_text = update.message.text
-    user_name = update.effective_user.first_name
-    
+async def send_reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, reply_text: str):
+    """Отправляет ответ пользователю"""
     try:
-        # Отправляем ответ пользователю
         await context.bot.send_message(
             chat_id=user_id,
             text=f"📬 <b>Ответ от поддержки:</b>\n\n{reply_text}\n\n"
                  f"─" * 30 + "\n"
-                 f"❓ <i>Остались вопросы? Напишите снова!</i>",
+                 f"❓ <i>Остались вопросы? Просто напишите их сюда!</i>",
             parse_mode="HTML"
         )
         
@@ -209,38 +244,19 @@ async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ <b>Ответ успешно отправлен!</b>\n\n"
             f"👤 <b>Пользователь ID:</b> <code>{user_id}</code>\n"
-            f"💬 <b>Текст:</b> {reply_text}",
+            f"💬 <b>Текст ответа:</b>\n{reply_text}",
             parse_mode="HTML"
         )
-        
-        # Сбрасываем режим ожидания
-        context.user_data["awaiting_reply_text"] = None
         
         logger.info(f"Ответ отправлен пользователю {user_id}")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def close_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Закрывает диалог с пользователем"""
-    query = update.callback_query
-    await query.answer()
-    
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="🔒 <b>Диалог с поддержкой закрыт.</b>\n\n"
-                 "Если у вас появятся новые вопросы — просто напишите их сюда!",
+        await update.message.reply_text(
+            f"❌ <b>Ошибка при отправке!</b>\n\n"
+            f"Пользователь {user_id} возможно заблокировал бота.\n"
+            f"Ошибка: {e}",
             parse_mode="HTML"
         )
-        
-        await query.edit_message_text(
-            f"✅ <b>Диалог с пользователем {user_id} закрыт</b>\n"
-            f"Пользователь получил уведомление."
-        )
-        
-    except Exception as e:
-        await query.edit_message_text(f"❌ Ошибка: {e}")
 
 # ===== ОБРАБОТЧИК КНОПОК =====
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -250,24 +266,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     first_name = query.from_user.first_name
     
-    # ===== ОБРАБОТКА КНОПОК ТЕХПОДДЕРЖКИ ДЛЯ ВЛАДЕЛЬЦА =====
-    if query.data.startswith("reply_"):
-        if query.from_user.id != OWNER_ID:
-            await query.answer("⛔ Только владелец может отвечать!", show_alert=True)
-            return
-        target_user_id = int(query.data.split("_")[1])
-        await reply_to_user(update, context, target_user_id)
-        return
-    
-    elif query.data.startswith("close_"):
-        if query.from_user.id != OWNER_ID:
-            await query.answer("⛔ Только владелец может закрыть диалог!", show_alert=True)
-            return
-        target_user_id = int(query.data.split("_")[1])
-        await close_dialog(update, context, target_user_id)
-        return
-    
-    # ===== ОБЫЧНЫЕ КНОПКИ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ =====
     if query.data == "check_subs":
         # Проверяем подписку на все каналы
         all_subscribed, subscriptions = await check_user_subscription(user_id, context)
@@ -315,8 +313,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {e}")
     
     elif query.data == "support":
-        # Включаем режим поддержки для пользователя
-        context.user_data["in_support_mode"] = True
         await query.edit_message_text(
             f"💬 <b>Техподдержка</b>\n\n"
             f"Напишите ваш вопрос подробно, и мы ответим вам в ближайшее время.\n\n"
@@ -324,7 +320,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Не приходит файл\n"
             f"• Вопросы по боту\n"
             f"• Предложения и пожелания\n\n"
-            f"✍️ Просто напишите ваше сообщение ниже:",
+            f"✍️ <b>Просто напишите ваше сообщение ниже:</b>",
             parse_mode="HTML"
         )
     
@@ -352,13 +348,13 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка статуса бота"""
     user_id = update.effective_user.id
     
-    text = f"🔍 Диагностика для {user_id}:\n\n"
+    text = f"🔍 <b>Диагностика для {user_id}:</b>\n\n"
     
     for channel in CHANNELS:
         channel_id = channel["id"]
         channel_name = channel["name"]
         
-        text += f"📢 Канал: {channel_name}\n"
+        text += f"📢 <b>Канал:</b> {channel_name}\n"
         
         try:
             chat = await context.bot.get_chat(channel_id)
@@ -366,13 +362,13 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 bot_in_channel = await context.bot.get_chat_member(channel_id, context.bot.id)
-                text += f"   Бот в канале: {bot_in_channel.status}\n"
+                text += f"   🤖 Бот в канале: {bot_in_channel.status}\n"
             except Exception as e:
                 text += f"   ❌ Бот не в канале: {e}\n"
                 
             try:
                 user_in_channel = await context.bot.get_chat_member(channel_id, user_id)
-                text += f"   Вы в канале: {user_in_channel.status}\n"
+                text += f"   👤 Вы в канале: {user_in_channel.status}\n"
             except Exception as e:
                 text += f"   ❌ Ошибка проверки вас: {e}\n"
                 
@@ -382,9 +378,9 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n"
     
     # Проверка настройки владельца
-    text += f"👑 Владелец ID: {OWNER_ID}\n"
+    text += f"👑 <b>Владелец ID:</b> <code>{OWNER_ID}</code>\n"
     if update.effective_user.id == OWNER_ID:
-        text += "✅ Вы владелец бота"
+        text += "✅ <b>Вы владелец бота</b>"
     
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -407,7 +403,7 @@ def main():
     print("🚀 Запуск бота...")
     print(f"👑 Владелец ID: {OWNER_ID}")
     print("📨 Все сообщения в техподдержку будут пересылаться владельцу")
-    print("💬 Для ответа используйте кнопки под сообщением\n")
+    print("✍️ Просто отвечайте на сообщения бота - они уйдут пользователю!\n")
     
     app = Application.builder().token(TOKEN).build()
     
@@ -416,15 +412,16 @@ def main():
     app.add_handler(CommandHandler("diag", diag))
     
     # Регистрируем обработчики сообщений
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-        support_message
-    ))
-    
-    # Обработка ответов от владельца (если он не через кнопки)
+    # Сначала проверяем, не владелец ли это (ответы)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.User(user_id=OWNER_ID),
-        handle_reply_text
+        handle_owner_reply
+    ))
+    
+    # Обработка сообщений от обычных пользователей
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & ~filters.User(user_id=OWNER_ID),
+        support_message
     ))
     
     # Регистрируем обработчики кнопок
